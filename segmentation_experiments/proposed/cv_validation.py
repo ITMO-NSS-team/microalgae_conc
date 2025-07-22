@@ -8,14 +8,16 @@ import pandas as pd
 
 from cv_algorithms import detect_cell_cv2, detect_cv2_objs
 
-images_path = '../data/raw'
-masks_path = '../data/marked'
+images_path = "../data/raw"
+masks_path = "../data/marked"
 
 
 def iou(predicted, target):
     """
     Return intersection over union metric for two classes (classic)
+
     """
+
     predicted = deepcopy(predicted)
     target = deepcopy(target)
 
@@ -30,8 +32,10 @@ def iou(predicted, target):
 
 def iou_one_class(predicted, target):
     """
-        Return intersection over union metric for one class (only cells)
+    Return intersection over union metric for one class (only cells)
+
     """
+
     predicted = deepcopy(predicted)
     target = deepcopy(target)
 
@@ -45,6 +49,10 @@ def iou_one_class(predicted, target):
 
 
 def area_error(predicted, target, percent=True):
+    """
+    No valid docstring found.
+    """
+
     predicted = deepcopy(predicted)
     target = deepcopy(target)
 
@@ -52,22 +60,30 @@ def area_error(predicted, target, percent=True):
     target[target != 0] = 1
 
     if percent:
-        return np.round(abs(np.sum(predicted) - np.sum(target))/np.sum(target), 3)
+        return np.round(abs(np.sum(predicted) - np.sum(target)) / np.sum(target), 3)
     else:
         return abs(np.sum(predicted) - np.sum(target))
 
 
 def validate_cv_with_real(save_path):
+    """
+    No valid docstring found.
+    """
+
     if not os.path.exists(save_path):
-        os.makedirs(f'{save_path}/images')
-    df = pd.DataFrame(columns=['file_name',
-                     'cells_num',
-                     'MAE',
-                               'IOU',
-                               'IOU(cells)',
-                               'Cells area',
-                               'Cells area error %',
-                               'Cells area error pixels'])
+        os.makedirs(f"{save_path}/images")
+    df = pd.DataFrame(
+        columns=[
+            "file_name",
+            "cells_num",
+            "MAE",
+            "IOU",
+            "IOU(cells)",
+            "Cells area",
+            "Cells area error %",
+            "Cells area error pixels",
+        ]
+    )
     names = []
     cells_num = []
     maes = []
@@ -77,16 +93,15 @@ def validate_cv_with_real(save_path):
     areas_errors = []
     areas_errors_pixels = []
 
-
     for file in os.listdir(masks_path):
-        mask = detect_cell_cv2(f'{images_path}/{file}', plot_visual=False)
-        img = cv2.imread(f'{masks_path}/{file}')
+        mask = detect_cell_cv2(f"{images_path}/{file}", plot_visual=False)
+        img = cv2.imread(f"{masks_path}/{file}")
 
         fig, axs = plt.subplots(2, 2, figsize=(10, 8))
-        axs[0, 0].imshow(mask, cmap='Grays')
-        axs[0, 0].set_title('Detected')
-        axs[0, 1].imshow(img, cmap='Grays')
-        axs[0, 1].set_title('Real')
+        axs[0, 0].imshow(mask, cmap="Grays")
+        axs[0, 0].set_title("Detected")
+        axs[0, 1].imshow(img, cmap="Grays")
+        axs[0, 1].set_title("Real")
 
         mask_g = np.mean(mask, axis=2)
         mask_g[mask_g != 0] = 255
@@ -102,16 +117,18 @@ def validate_cv_with_real(save_path):
         area_val = area_error(mask_g, img_g)
         area_pixel_val = area_error(mask_g, img_g, percent=False)
 
-        axs[1, 0].imshow(mask, cmap='Grays')
+        axs[1, 0].imshow(mask, cmap="Grays")
         for p in mask_objs:
-            axs[1, 0].scatter(p[0], p[1], c='r', s=5)
-        axs[1, 0].set_title('Detected')
-        axs[1, 1].imshow(img, cmap='Grays')
+            axs[1, 0].scatter(p[0], p[1], c="r", s=5)
+        axs[1, 0].set_title("Detected")
+        axs[1, 1].imshow(img, cmap="Grays")
         for p in real_objs:
-            axs[1, 1].scatter(p[0], p[1], c='r', s=5)
-        axs[1, 1].set_title('Real')
+            axs[1, 1].scatter(p[0], p[1], c="r", s=5)
+        axs[1, 1].set_title("Real")
 
-        plt.suptitle(f'Cells MAE={mae_cells}, IOU={iou_val}, IOU(cells)={iou_one_val}, cells area error={area_val}')
+        plt.suptitle(
+            f"Cells MAE={mae_cells}, IOU={iou_val}, IOU(cells)={iou_one_val}, cells area error={area_val}"
+        )
 
         plt.tight_layout()
         plt.savefig(f'{save_path}/images/{file.split(".")[0]}_val.png')
@@ -127,18 +144,17 @@ def validate_cv_with_real(save_path):
         areas_errors.append(area_val)
         areas_errors_pixels.append(area_pixel_val)
 
-    df['file_name'] = names
-    df['cells_num'] = cells_num
-    df['MAE'] = maes
-    df['IOU'] = ious
-    df['IOU(cells)'] = ious_one
-    df['Cells area'] = areas
-    df['Cells area error %'] = areas_errors
-    df['Cells area error pixels'] = areas_errors_pixels
+    df["file_name"] = names
+    df["cells_num"] = cells_num
+    df["MAE"] = maes
+    df["IOU"] = ious
+    df["IOU(cells)"] = ious_one
+    df["Cells area"] = areas
+    df["Cells area error %"] = areas_errors
+    df["Cells area error pixels"] = areas_errors_pixels
 
-    df.to_csv(f'{save_path}/metrics.csv', index=False)
-
-#out_folder = f'validation'
-#validate_cv_with_real(out_folder)
+    df.to_csv(f"{save_path}/metrics.csv", index=False)
 
 
+# out_folder = f'validation'
+# validate_cv_with_real(out_folder)
