@@ -15,6 +15,10 @@ from copy import deepcopy
 
 # Configuration
 class Config:
+    """
+    Config class to manage experiment parameters.
+    """
+
     # Paths
     raw_images_path = "../../photo_data/cells_counting/raw"
     marked_images_path = "../../photo_data/cells_counting/marked"
@@ -33,15 +37,51 @@ class Config:
 
 # Dataset Class
 class MicroalgaeDataset(Dataset):
+    """
+    A PyTorch Dataset class for loading and preprocessing microalgae images and their corresponding segmentation masks.
+
+    Attributes:
+        image_files: List of paths to the image files.
+        transform: Optional transform to apply to the images.
+        train: Boolean indicating whether the dataset is for training or validation/testing.
+
+    Class Methods:
+    - __init__:
+    """
+
     def __init__(self, image_files, transform=None, train=True):
         self.image_files = image_files
         self.transform = transform
         self.train = train
 
     def __len__(self):
+        """
+        Returns the size of the dataset.
+
+
+            Parameters:
+                None
+
+            Returns:
+                int: The number of image files in the collection.
+        """
+
         return len(self.image_files)
 
     def __getitem__(self, idx):
+        """
+        Loads an image and generates a corresponding mask, resizing and normalizing both for model input. During training, the mask is read from file and binarized; otherwise, a blank mask is created. Both are converted to PyTorch tensors with appropriate dimensions.
+
+        Args:
+            idx: The index of the image to retrieve.
+
+        Returns:
+            tuple: A tuple containing the processed image (torch.Tensor) and mask (torch.Tensor).
+                   The image is a CHW tensor with values normalized between 0 and 1,
+                   and the mask is a single-channel tensor representing the segmentation.
+
+        """
+
         img_path = os.path.join(Config.raw_images_path, self.image_files[idx])
         img = imread(img_path)
 
@@ -80,7 +120,7 @@ class DoubleConv(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU(inplace=True),
         )
 
     def forward(self, x):
@@ -93,8 +133,7 @@ class Down(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
-            nn.MaxPool2d(2),
-            DoubleConv(in_channels, out_channels)
+            nn.MaxPool2d(2), DoubleConv(in_channels, out_channels)
         )
 
     def forward(self, x):
@@ -107,9 +146,11 @@ class Up(nn.Module):
     def __init__(self, in_channels, out_channels, bilinear=True):
         super().__init__()
         if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         else:
-            self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, kernel_size=2, stride=2)
+            self.up = nn.ConvTranspose2d(
+                in_channels // 2, in_channels // 2, kernel_size=2, stride=2
+            )
 
         self.conv = DoubleConv(in_channels, out_channels)
 
@@ -119,14 +160,33 @@ class Up(nn.Module):
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
 
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-                        diffY // 2, diffY - diffY // 2])
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
 
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
 
 class OutConv(nn.Module):
+    """
+    OutConv layer.
+
+    This class implements a convolutional layer with an outer product expansion,
+    designed to reduce the number of parameters compared to standard convolutions.
+    It's particularly useful for scenarios where computational efficiency is crucial.
+
+    Attributes:
+        in_channels: The number of input channels.
+        out_channels: The number of output channels.
+        kernel_size: The size of the convolutional kernel.
+        stride: The stride of the convolution.
+        padding: The padding applied to the input.
+        weight: The learnable weights of the convolution.
+        bias: The learnable bias of the convolution.
+
+    Class Methods:
+    - __init__:
+    """
+
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -136,7 +196,31 @@ class OutConv(nn.Module):
 
 
 class UNet(nn.Module):
+    """
+    U-Net model for image segmentation.
+
+    This class implements the U-Net architecture, a convolutional neural network
+    commonly used for semantic image segmentation tasks. It consists of an encoder
+    path that downsamples the input and a decoder path that upsamples it back to
+    the original resolution, with skip connections between corresponding layers
+    in the encoder and decoder.
+
+    """
+
     def __init__(self, n_channels=3, n_classes=1, bilinear=True):
+        """
+        Initializes the encoder and decoder blocks of the U-Net architecture, configuring them based on input and output channel specifications, and enabling or disabling bilinear upsampling.
+
+
+        Args:
+            n_channels: The number of input channels.
+            n_classes: The number of output classes.
+            bilinear: Whether to use bilinear interpolation in upsampling layers.
+
+        Returns:
+            None
+        """
+
         super().__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
@@ -155,6 +239,18 @@ class UNet(nn.Module):
         self.outc = OutConv(64, n_classes)
 
     def forward(self, x):
+        """
+        Performs a complete forward pass through the U-Net, progressively downsampling and then upsampling the input to generate a segmentation map.
+
+        Args:
+            x: Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor after applying sigmoid activation,
+                          representing the predicted segmentation map.
+
+        """
+
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
@@ -171,6 +267,10 @@ class UNet(nn.Module):
 
 # Metrics (same as your StarDist evaluation)
 def iou(predicted, target):
+    """
+    No valid docstring found.
+    """
+
     predicted = deepcopy(predicted)
     target = deepcopy(target)
 
@@ -184,6 +284,10 @@ def iou(predicted, target):
 
 
 def area_error(predicted, target, percent=True):
+    """
+    No valid docstring found.
+    """
+
     predicted = deepcopy(predicted)
     target = deepcopy(target)
 
@@ -197,6 +301,10 @@ def area_error(predicted, target, percent=True):
 
 # Training Function
 def train_model(model, train_loader, val_loader, optimizer, criterion, epochs):
+    """
+    No valid docstring found.
+    """
+
     best_iou = 0.0
     model = model.to(Config.device)
 
@@ -240,7 +348,8 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, epochs):
         val_iou = val_iou / len(val_loader)
 
         print(
-            f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} - Val IoU: {val_iou:.4f}")
+            f"Epoch {epoch + 1}/{epochs} - Train Loss: {train_loss:.4f} - Val Loss: {val_loss:.4f} - Val IoU: {val_iou:.4f}"
+        )
 
         # Save best model
         if val_iou > best_iou:
@@ -252,6 +361,10 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, epochs):
 
 # Inference on full-size images using patch-based processing
 def predict_full_image(model, image_path, threshold=0.5):
+    """
+    No valid docstring found.
+    """
+
     # Load and preprocess image
     img = imread(image_path)
     original_size = img.shape[:2]
@@ -261,7 +374,7 @@ def predict_full_image(model, image_path, threshold=0.5):
     # Pad image to be divisible by patch size
     pad_h = (Config.patch_size - img.shape[2] % Config.patch_size) % Config.patch_size
     pad_w = (Config.patch_size - img.shape[3] % Config.patch_size) % Config.patch_size
-    img = F.pad(img, (0, pad_w, 0, pad_h), mode='reflect')
+    img = F.pad(img, (0, pad_w, 0, pad_h), mode="reflect")
 
     # Process in patches
     output = torch.zeros(1, 1, img.shape[2], img.shape[3])
@@ -269,18 +382,28 @@ def predict_full_image(model, image_path, threshold=0.5):
 
     model.eval()
     with torch.no_grad():
-        for i in range(0, img.shape[2] - Config.patch_size + 1, Config.patch_size - Config.overlap):
-            for j in range(0, img.shape[3] - Config.patch_size + 1, Config.patch_size - Config.overlap):
-                patch = img[:, :, i:i + Config.patch_size, j:j + Config.patch_size].to(Config.device)
+        for i in range(
+            0, img.shape[2] - Config.patch_size + 1, Config.patch_size - Config.overlap
+        ):
+            for j in range(
+                0,
+                img.shape[3] - Config.patch_size + 1,
+                Config.patch_size - Config.overlap,
+            ):
+                patch = img[
+                    :, :, i : i + Config.patch_size, j : j + Config.patch_size
+                ].to(Config.device)
                 pred = model(patch).cpu()
 
                 # Blend predictions in overlap regions
-                output[:, :, i:i + Config.patch_size, j:j + Config.patch_size] += pred
-                count[:, :, i:i + Config.patch_size, j:j + Config.patch_size] += 1
+                output[
+                    :, :, i : i + Config.patch_size, j : j + Config.patch_size
+                ] += pred
+                count[:, :, i : i + Config.patch_size, j : j + Config.patch_size] += 1
 
     # Average predictions
     output = output / count
-    output = output[:, :, :original_size[0], :original_size[1]]  # Remove padding
+    output = output[:, :, : original_size[0], : original_size[1]]  # Remove padding
     mask = (output.squeeze() > threshold).float().numpy()
 
     return mask
@@ -304,7 +427,9 @@ if __name__ == "__main__":
     criterion = nn.BCELoss()  # Binary Cross-Entropy Loss
 
     # Train
-    trained_model = train_model(model, train_loader, val_loader, optimizer, criterion, Config.epochs)
+    trained_model = train_model(
+        model, train_loader, val_loader, optimizer, criterion, Config.epochs
+    )
 
     # Example inference on a validation image
     sample_image_path = os.path.join(Config.raw_images_path, val_files[0])
@@ -314,12 +439,12 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(1, 2, figsize=(12, 6))
     ax[0].imshow(imread(sample_image_path))
     ax[0].set_title("Original Image")
-    ax[0].axis('off')
+    ax[0].axis("off")
 
-    ax[1].imshow(predicted_mask, cmap='gray')
+    ax[1].imshow(predicted_mask, cmap="gray")
     ax[1].set_title("Predicted Mask")
-    ax[1].axis('off')
+    ax[1].axis("off")
 
     plt.tight_layout()
-    plt.savefig('unet_infrrence.png')
+    plt.savefig("unet_infrrence.png")
     plt.show()
