@@ -1,4 +1,4 @@
-# microalgae_conc
+# Low-cost Microalgae Cell Concentration Estimation in Hydrochemistry Applications Using Computer Vision
 
 ---
 
@@ -39,6 +39,33 @@ This project focuses on estimating microalgae cell concentration, comparing auto
 
 This project employs a computer vision pipeline for automated microalgae cell concentration estimation. A key technique is the Hough Circle Transform, used to identify and locate individual cells within microscopic images without requiring extensive training data. Image preprocessing steps like spectrum correction and median blur filtering enhance image quality for accurate circle detection. Concentration calculation leverages chamber geometry and detected cell counts to estimate cells per milliliter.  A U-Net convolutional neural network architecture is also implemented for segmentation, offering an alternative approach to identifying cells within images. Finally, statistical analysis—including Pearson correlation coefficients—validates the automated method against manual counting.
 
+<p align="center">
+<img src="media/approach_dif.png" width="600">
+</p>
+
+Scheme of proposed automated approach:
+
+<p align="center">
+<img src="media/approach.png" width="600">
+</p>
+
+---
+
+## Results
+
+Statistical comparison revealed strong agreement between expert and automated cell 
+counting methods:
+
+<p align="center">
+<img src="validation/correlation_plot.png" width="600">
+</p>
+
+Examples of manual and automated processing (low magnification):
+
+<p align="center">
+<img src="media/marked_ex.png" width="600">
+</p>
+
 ---
 
 ## Installation
@@ -71,32 +98,3 @@ This project is protected under the BSD 3-Clause "New" or "Revised" License. For
 
 ---
 
-## Citation
-
-If you use this software, please cite it as below.
-
-### APA format:
-
-    ITMO-NSS-team (2025). microalgae_conc repository [Computer software]. https://github.com/ITMO-NSS-team/microalgae_conc
-
-### BibTeX format:
-
-    @misc{microalgae_conc,
-
-        author = {ITMO-NSS-team},
-
-        title = {microalgae_conc repository},
-
-        year = {2025},
-
-        publisher = {github.com},
-
-        journal = {github.com repository},
-
-        howpublished = {\url{https://github.com/ITMO-NSS-team/microalgae_conc.git}},
-
-        url = {https://github.com/ITMO-NSS-team/microalgae_conc.git}
-
-    }
-
----
