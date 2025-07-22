@@ -15,13 +15,15 @@ def load_data():
     auto_means = auto_df.iloc[:, 1:].mean(axis=1) / 1e6
     auto_sd = auto_df.iloc[:, 1:].std(axis=1) / 1e6
 
-    return pd.DataFrame({
-        "Sample": expert_df["Sample"],
-        "Expert_Mean": expert_means,
-        "Expert_SD": expert_sd,
-        "Auto_Mean": auto_means,
-        "Auto_SD": auto_sd
-    })
+    return pd.DataFrame(
+        {
+            "Sample": expert_df["Sample"],
+            "Expert_Mean": expert_means,
+            "Expert_SD": expert_sd,
+            "Auto_Mean": auto_means,
+            "Auto_SD": auto_sd
+        }
+    )
 
 
 # Load high magnification data (from your table)
@@ -49,7 +51,7 @@ high_mag_df = pd.DataFrame(
                 2.00,
                 20.2,
                 30.5,
-                31.7
+                31.7,
         ],
         "Auto_Mean": [
             1.14,
@@ -72,7 +74,7 @@ high_mag_df = pd.DataFrame(
             15.2,
             16.4,
             36.2,
-            39.2
+            39.2,
         ],
     }
 )
@@ -100,7 +102,7 @@ for i, row in low_mag_df.iterrows():
     # Add sample number annotation
     plt.text(
         row["Expert_Mean"] + 1,  # X position (offset slightly right)
-        row["Auto_Mean"]+2,  # Y position
+        row["Auto_Mean"] + 2,  # Y position
         str(int(row["Sample"])),  # Sample number
         fontsize=10,
         color="black",
