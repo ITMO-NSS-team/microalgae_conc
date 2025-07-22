@@ -21,7 +21,7 @@ def load_data():
             "Expert_Mean": expert_means,
             "Expert_SD": expert_sd,
             "Auto_Mean": auto_means,
-            "Auto_SD": auto_sd
+            "Auto_SD": auto_sd,
         }
     )
 
@@ -29,29 +29,29 @@ def load_data():
 # Load high magnification data (from your table)
 high_mag_df = pd.DataFrame(
     {
-            "Sample": range(1, 22),
-            "Expert_Mean": [
-                1.57,
-                1.89,
-                3.17,
-                4.19,
-                4.81,
-                5.11,
-                6.97,
-                1.00,
-                11.8,
-                12.4,
-                12.5,
-                12.9,
-                13.0,
-                13.4,
-                14.3,
-                16.7,
-                17.4,
-                2.00,
-                20.2,
-                30.5,
-                31.7,
+        "Sample": range(1, 22),
+        "Expert_Mean": [
+            1.57,
+            1.89,
+            3.17,
+            4.19,
+            4.81,
+            5.11,
+            6.97,
+            1.00,
+            11.8,
+            12.4,
+            12.5,
+            12.9,
+            13.0,
+            13.4,
+            14.3,
+            16.7,
+            17.4,
+            2.00,
+            20.2,
+            30.5,
+            31.7,
         ],
         "Auto_Mean": [
             1.14,
