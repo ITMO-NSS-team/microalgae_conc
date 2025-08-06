@@ -13,6 +13,15 @@ Built with:
 ![tqdm](https://img.shields.io/badge/tqdm-FFC107.svg?style={0}&logo=tqdm&logoColor=black)
 
 ---
+## Source
+
+The source paper was published in Sensors (2025, 25(15)); the full text is available via [link](https://www.mdpi.com/1424-8220/25/15/4651).
+
+**Citation**: Borisova, J., Morshchinin, I. V., Nazarova, V. I., Molodkina, N., & Nikitin, N. O. (2025). 
+Low-Cost Microalgae Cell Concentration Estimation in Hydrochemistry Applications Using Computer Vision. Sensors, 25(15), 4651. https://doi.org/10.3390/s25154651
+
+
+---
 
 ## Overview
 
