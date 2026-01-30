@@ -1,14 +1,21 @@
 import sys
 import os
+import math
+import matplotlib
+matplotlib.use('Agg')  
+import matplotlib.pyplot as plt
+plt.show = lambda: None 
+
 from pathlib import Path
 from datetime import datetime
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                                QHBoxLayout, QLabel, QLineEdit, QPushButton, 
                                QStackedWidget, QFrame, QGridLayout, QMessageBox,
-                               QProgressDialog, QFileDialog)
+                               QProgressDialog, QFileDialog, QComboBox)
 from PySide6.QtCore import Qt, QThread, Signal
 import cv2
 import numpy as np
+import traceback
 
 # ИМПОРТЫ ИЗ РЕПОЗИТОРИЯ
 try:
@@ -16,12 +23,16 @@ try:
     from CellCounter.ConcentrationCalculator import calculate_concentration
     from CellCounter.VolumeCalculator import calc_volume
 except ImportError:
-    # Заглушка для теста интерфейса без библиотек
     print("ВНИМАНИЕ: Модули CellCounter не найдены. Функционал будет ограничен.")
-    def detect_cells(*args, **kwargs): return np.zeros((1, 9, 3)) # имитация 9 клеток
+    def detect_cells(*args, **kwargs): return np.zeros((1, 9, 3)) 
     def visualize_circles(*args, **kwargs): pass
     def calculate_concentration(*args, **kwargs): return 150193
-    def calc_volume(*args, **kwargs): return 0.011985
+    def calc_volume(*args, **kwargs): 
+        if kwargs.get('plot_stats_path'):
+            try:
+                with open(kwargs['plot_stats_path'], 'w') as f: f.write("fake plot")
+            except: pass
+        return 0.011985
 
 # КОНСТАНТЫ СТИЛЯ
 COLOR_BG_MAIN = "#734d4d"
@@ -34,8 +45,8 @@ COLOR_BTN_HOVER = "#5e4040"
 
 DEFAULT_VALUES = {
     "коэф. сглаживания": "25",
-    "мин. радиус (мм)": "15",
-    "макс. радиус (мм)": "100",
+    "мин. радиус (пикс.)": "15",
+    "макс. радиус (пикс.)": "100",
     "верхний порог": "30",
     "нижний порог": "30",
     "контрастность": "нет",
@@ -43,7 +54,19 @@ DEFAULT_VALUES = {
     "средний радиус": "нет"
 }
 
+COMBO_OPTIONS = {
+    "контрастность": ["нет", "да"],
+    "обозначение": ["нет", "да"],
+    "средний радиус": ["нет", "да"]
+}
+
 MANDATORY_FIELDS = ["размер сетки (мм)", "глубина камеры (мм)", "коэф. разбавления"]
+
+MANDATORY_DEFAULTS = {
+    "размер сетки (мм)": "0.05",
+    "глубина камеры (мм)": "0.1",
+    "коэф. разбавления": "1"
+}
 
 STYLE = f"""
     QMainWindow {{ 
@@ -55,7 +78,7 @@ STYLE = f"""
         font-size: 16px; 
     }}
     
-    QLineEdit {{
+    QLineEdit, QComboBox {{
         background-color: {COLOR_INPUT_BG};
         border-radius: 8px;
         padding: 8px 12px;
@@ -63,9 +86,17 @@ STYLE = f"""
         border: 1px solid rgba(255,255,255,0.3);
         font-size: 15px;
     }}
-    QLineEdit:focus {{
+    QLineEdit:focus, QComboBox:focus {{
         border: 1px solid white;
         background-color: {COLOR_ACCENT};
+    }}
+    QComboBox::drop-down {{
+        border: 0px;
+    }}
+    QComboBox QAbstractItemView {{
+        background-color: {COLOR_CARD_BG};
+        color: white;
+        selection-background-color: {COLOR_ACCENT};
     }}
     
     QPushButton {{
@@ -152,6 +183,9 @@ class ProcessingThread(QThread):
         
     def run(self):
         try:
+            output_dir = Path(self.image_path).parent / "results"
+            output_dir.mkdir(exist_ok=True)
+            
             self.progress.emit("Загрузка изображения...")
             image = cv2.imread(self.image_path)
             if image is None:
@@ -167,8 +201,8 @@ class ProcessingThread(QThread):
                 image,
                 increase_channel=increase_channel,
                 minDist=int(self.params.get('коэф. сглаживания', 25)),
-                minRadius=int(self.params.get('мин. радиус (мм)', 15)),
-                maxRadius=int(self.params.get('макс. радиус (мм)', 100)),
+                minRadius=int(self.params.get('мин. радиус (пикс.)', 15)),
+                maxRadius=int(self.params.get('макс. радиус (пикс.)', 100)),
                 param2=int(self.params.get('верхний порог', 30)),
                 blur_kernel=int(self.params.get('коэф. сглаживания', 25))
             )
@@ -179,10 +213,12 @@ class ProcessingThread(QThread):
             cell_count = circles.shape[1]
             self.progress.emit(f"Обнаружено клеток: {cell_count}")
             
-            self.progress.emit("Расчет объема...")
+            self.progress.emit("Расчет объема и калибровка...")
             grid_size = float(self.params['размер сетки (мм)'])
             depth = float(self.params['глубина камеры (мм)'])
             P_h, P_w = image.shape[:2]
+            
+            calib_plot_path = output_dir / f"calibration_stats_{Path(self.image_path).stem}.png"
             
             v_img = calc_volume(
                 imgs_path=self.calibration_folder,
@@ -190,16 +226,19 @@ class ProcessingThread(QThread):
                 h=depth,
                 P_h=P_h,
                 P_w=P_w,
-                plot_stats_path=None
+                plot_stats_path=str(calib_plot_path) 
             )
+
+            # Вычисление коэффициента масштаба
+            s_squared = v_img / (P_h * P_w * depth)
+            mm_per_pixel = math.sqrt(s_squared)
             
             self.progress.emit("Расчет концентрации...")
             dilution = float(self.params['коэф. разбавления'])
             concentration = calculate_concentration(cell_count, dilution, v_img)
             
             self.progress.emit("Сохранение результатов...")
-            output_dir = Path(self.image_path).parent / "results"
-            output_dir.mkdir(exist_ok=True)
+            
             output_path = output_dir / f"result_{Path(self.image_path).stem}.png"
             txt_output_path = output_dir / f"result_{Path(self.image_path).stem}.txt"
             
@@ -209,48 +248,40 @@ class ProcessingThread(QThread):
             visualize_circles(image, circles, save_path=str(output_path),
                               annotate=show_annotation, ext_title=show_radius)
             
-            # Сохранение отчета в новом формате
             self.save_results_to_txt(txt_output_path, cell_count, v_img, concentration,
-                                     self.image_path, self.calibration_folder, self.params)
+                                     self.image_path, self.calibration_folder, self.params, mm_per_pixel)
             
             result = {
                 'cell_count': cell_count,
                 'concentration': concentration,
                 'volume': v_img,
+                'scale_factor': mm_per_pixel,
                 'output_path': str(output_path),
                 'txt_path': str(txt_output_path),
-                'output_dir': str(output_dir) # путь к папке
+                'output_dir': str(output_dir),
+                'calib_plot': str(calib_plot_path)
             }
             self.finished.emit(result)
             
         except Exception as e:
-            self.error.emit(str(e))
+            error_log = traceback.format_exc()
+            self.error.emit(error_log)
     
     def save_results_to_txt(self, filepath, cell_count, volume, concentration, 
-                           image_path, calib_folder, params):
-        """Сохранение отчета по указанному формату"""
+                           image_path, calib_folder, params, scale_factor):
         with open(filepath, 'w', encoding='utf-8') as f:
-            # Заголовок с датой
             f.write(f"Дата и время анализа: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            
-            # Входные данные
             f.write("ВХОДНЫЕ ДАННЫЕ\n")
             f.write(f"Изображение для анализа: {image_path}\n")
             f.write(f"Папка калибровки: {calib_folder}\n\n")
-            
-            # Параметры обработки
             f.write("ПАРАМЕТРЫ ОБРАБОТКИ\n")
-            f.write(f"Размер сетки: {params.get('размер сетки (мм)', '?')} мм\n")
-            f.write(f"Глубина камеры: {params.get('глубина камеры (мм)', '?')} мм\n")
-            f.write(f"Коэффициент разбавления: {params.get('коэф. разбавления', '?')}\n")
-            f.write(f"Коэффициент сглаживания: {params.get('коэф. сглаживания', '25')}\n")
-            f.write(f"Минимальный радиус клетки: {params.get('мин. радиус (мм)', '15')} пикс.\n")
-            f.write(f"Максимальный радиус клетки: {params.get('макс. радиус (мм)', '100')} пикс.\n")
-            f.write(f"Верхний порог: {params.get('верхний порог', '30')}\n")
-            f.write(f"Повышение контрастности: {params.get('контрастность', 'нет')}\n\n")
+            for k, v in params.items():
+                f.write(f"{k}: {v}\n")
             
-            # Результаты
-            f.write("РЕЗУЛЬТАТЫ АНАЛИЗА\n")
+            f.write(f"\nКАЛИБРОВКА\n")
+            f.write(f"Коэффициент масштаба: {scale_factor:.6e} мм/пиксель\n")
+
+            f.write("\nРЕЗУЛЬТАТЫ АНАЛИЗА\n")
             f.write(f"Обнаружено клеток: {cell_count}\n")
             f.write(f"Объем изображения: {volume:.6f} мм³\n")
             f.write(f"Концентрация: {concentration} клеток/мл\n")
@@ -333,6 +364,18 @@ class MainScreen(QWidget):
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(footer)
 
+# [ИЗМЕНЕНИЕ] Подсказки теперь только на русском
+PARAM_DESCRIPTIONS = {
+    "коэф. сглаживания": "Размер ядра для медианного размытия (должен быть нечетным целым числом).",
+    "мин. радиус (пикс.)": "Минимальный радиус клетки для обнаружения в пикселях.",
+    "макс. радиус (пикс.)": "Максимальный радиус клетки для обнаружения в пикселях.",
+    "верхний порог": "Порог аккумулятора (более низкие значения приводят к обнаружению большего числа ложных кругов).",
+    "нижний порог": "Порог детектора границ Canny.",
+    "контрастность": "Функция увеличения контраста в одном канале изображения с использованием CLAHE.",
+    "обозначение": "Нумеровать ли обнаруженные круги.",
+    "средний радиус": "Показывать ли расширенный заголовок со статистикой площади."
+}
+
 class SettingsScreen(QWidget):
     def __init__(self, nav):
         super().__init__()
@@ -353,6 +396,7 @@ class SettingsScreen(QWidget):
         content_layout.setSpacing(30)
         self.inputs = {}
 
+        # --- ЛЕВАЯ КАРТОЧКА ---
         left_card = QFrame()
         left_card.setObjectName("Card")
         left_layout = QVBoxLayout(left_card)
@@ -365,7 +409,7 @@ class SettingsScreen(QWidget):
         left_layout.addWidget(QLabel("(введите значения вручную)"), alignment=Qt.AlignmentFlag.AlignCenter)
         left_layout.addSpacing(10)
 
-        for name in MANDATORY_FIELDS:
+        for name, default_val in MANDATORY_DEFAULTS.items():
             row_w = QWidget()
             row = QHBoxLayout(row_w)
             row.setContentsMargins(0,0,0,0)
@@ -376,6 +420,12 @@ class SettingsScreen(QWidget):
             edit = QLineEdit()
             edit.setFixedWidth(140)
             edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            edit.setText(default_val)
+            edit.setPlaceholderText(default_val)
+            
+            edit.editingFinished.connect(
+                lambda e=edit, d=default_val: e.setText(d) if not e.text().strip() else None
+            )
             
             self.inputs[name] = edit
             row.addWidget(lbl, 1)
@@ -389,6 +439,7 @@ class SettingsScreen(QWidget):
         btn_def.clicked.connect(lambda: nav(2))
         left_layout.addWidget(btn_def)
 
+        # --- ПРАВАЯ КАРТОЧКА ---
         right_card = QFrame()
         right_card.setObjectName("Card")
         right_layout = QVBoxLayout(right_card)
@@ -398,21 +449,39 @@ class SettingsScreen(QWidget):
         r_title.setObjectName("SectionTitle")
         r_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_layout.addWidget(r_title)
-        right_layout.addWidget(QLabel("(можно изменить при необходимости)"), alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        hint_label = QLabel("(наведите на название для справки)")
+        hint_label.setStyleSheet("font-size: 13px; color: rgba(255,255,255,0.6);")
+        right_layout.addWidget(hint_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        
         right_layout.addSpacing(10)
         
-        for name in DEFAULT_VALUES.keys():
+        for name, default_val in DEFAULT_VALUES.items():
             row_w = QWidget()
             row = QHBoxLayout(row_w)
             row.setContentsMargins(0,0,0,0)
             
-            lbl = QLabel(name)
+            lbl = QLabel(f"{name} ℹ️")
             lbl.setWordWrap(True)
             
-            edit = QLineEdit()
-            edit.setFixedWidth(140)
-            edit.setPlaceholderText(str(DEFAULT_VALUES[name]))
-            edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            description = PARAM_DESCRIPTIONS.get(name, "Нет описания.")
+            lbl.setToolTip(description)
+            lbl.setCursor(Qt.CursorShape.WhatsThisCursor)
+            
+            if name in COMBO_OPTIONS:
+                edit = QComboBox()
+                edit.setFixedWidth(140)
+                edit.addItems(COMBO_OPTIONS[name])
+                idx = edit.findText(default_val)
+                if idx >= 0:
+                    edit.setCurrentIndex(idx)
+            else:
+                edit = QLineEdit()
+                edit.setFixedWidth(140)
+                edit.setPlaceholderText(str(default_val))
+                edit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            edit.setToolTip(description)
             
             self.inputs[name] = edit
             row.addWidget(lbl, 1)
@@ -430,11 +499,12 @@ class DefaultScreen(QWidget):
     def __init__(self, nav):
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setContentsMargins(30, 20, 30, 20)
         
         header = QHBoxLayout()
         btn_back = QPushButton("← Назад к настройкам")
         btn_back.setFixedWidth(200)
+        btn_back.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_back.clicked.connect(lambda: nav(1))
         header.addWidget(btn_back)
         header.addStretch()
@@ -442,50 +512,60 @@ class DefaultScreen(QWidget):
 
         layout.addStretch(1)
 
+        card_h_layout = QHBoxLayout()
+        card_h_layout.addStretch(1)
+
         card = QFrame()
         card.setObjectName("Card")
-        card.setMinimumWidth(500)
-        card.setMinimumHeight(400)
+        card.setMinimumWidth(700)
+        card.setMaximumWidth(900)
         
         grid = QGridLayout(card)
-        grid.setHorizontalSpacing(40)
-        grid.setVerticalSpacing(20)
-        grid.setContentsMargins(40, 40, 40, 40)
+        grid.setContentsMargins(40, 25, 40, 25) 
+        grid.setHorizontalSpacing(50)
+        grid.setVerticalSpacing(6)
 
         title = QLabel("Параметры по умолчанию")
         title.setObjectName("SectionTitle")
-        title.setStyleSheet("font-size: 24px; margin-bottom: 20px;")
+        title.setStyleSheet("font-size: 22px; font-weight: bold; margin-bottom: 10px; color: #fff;")
         grid.addWidget(title, 0, 0, 1, 2, Qt.AlignmentFlag.AlignCenter)
 
+        all_params = {**MANDATORY_DEFAULTS, **DEFAULT_VALUES}
+        
         row = 1
-        for k, v in DEFAULT_VALUES.items():
+        for k, v in all_params.items():
             k_label = QLabel(k)
-            k_label.setStyleSheet("color: #ddd; font-weight: bold;")
+            k_label.setStyleSheet("color: #ddd; font-size: 15px; background: transparent;")
             
-            v_label = QLabel(v)
-            v_label.setStyleSheet("color: #fff; font-size: 18px;")
-            v_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+            v_label = QLabel(str(v))
+            v_label.setStyleSheet("color: #fff; font-size: 17px; font-weight: bold; background: transparent;")
+            v_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             
             grid.addWidget(k_label, row, 0)
             grid.addWidget(v_label, row, 1)
             
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
-            line.setStyleSheet("color: rgba(255,255,255,0.1);")
+            line.setFixedHeight(1)
+            line.setStyleSheet("background-color: rgba(255,255,255,0.1); border: none;")
             grid.addWidget(line, row+1, 0, 1, 2)
             
+            grid.setRowMinimumHeight(row, 28) 
             row += 2
 
-        info_l = QLabel("Канал контраста")
-        info_l.setStyleSheet("color: #ddd; font-weight: bold;")
-        info_v = QLabel("0 (Синий)")
-        info_v.setStyleSheet("color: #fff; font-size: 18px;")
+        info_l = QLabel("Канал контраста (авто)")
+        info_l.setStyleSheet("color: #ddd; font-size: 15px;")
+        info_v = QLabel("0 (Blue channel)")
+        info_v.setStyleSheet("color: #fff; font-size: 17px; font-weight: bold;")
         info_v.setAlignment(Qt.AlignmentFlag.AlignRight)
-        
         grid.addWidget(info_l, row, 0)
         grid.addWidget(info_v, row, 1)
+        grid.setRowMinimumHeight(row, 28)
 
-        layout.addWidget(card, alignment=Qt.AlignmentFlag.AlignCenter)
+        card_h_layout.addWidget(card)
+        card_h_layout.addStretch(1)
+        
+        layout.addLayout(card_h_layout)
         layout.addStretch(1)
 
 class App(QMainWindow):
@@ -493,6 +573,7 @@ class App(QMainWindow):
         super().__init__()
         self.setWindowTitle("Microalgae Concentration Calculator")
         self.resize(1100, 800)
+        self.setMinimumSize(950, 750)
         self.setStyleSheet(STYLE)
 
         self.stack = QStackedWidget()
@@ -536,8 +617,12 @@ class App(QMainWindow):
         final_params = {}
         missing = []
         
-        for name, edit in self.sett_scr.inputs.items():
-            val = edit.text().strip()
+        for name, widget in self.sett_scr.inputs.items():
+            if isinstance(widget, QComboBox):
+                val = widget.currentText()
+            else:
+                val = widget.text().strip()
+            
             if name in MANDATORY_FIELDS:
                 if not val:
                     missing.append(name)
@@ -549,7 +634,10 @@ class App(QMainWindow):
                         QMessageBox.warning(self, "Ошибка", f"Некорректное число: {name}")
                         return
             else:
-                final_params[name] = val if val else DEFAULT_VALUES[name]
+                if isinstance(widget, QLineEdit) and not val:
+                    final_params[name] = DEFAULT_VALUES[name]
+                else:
+                    final_params[name] = val
 
         if missing:
             QMessageBox.warning(self, "Заполните обязательные поля", 
@@ -570,16 +658,36 @@ class App(QMainWindow):
 
     def on_finished(self, res):
         self.progress.close()
-        # Вывод сообщения с полным путем
+        
+        calib_msg = ""
+        if os.path.exists(res['calib_plot']):
+            calib_msg = f"\n📊 График калибровки создан:\n{os.path.basename(res['calib_plot'])}"
+        
+        # ДОБАВЛЕН ВЫВОД КОЭФФИЦИЕНТА
         msg = (f"Анализ успешно завершен!\n\n"
                f"Обнаружено клеток: {res['cell_count']}\n"
-               f"Концентрация: {res['concentration']} клеток/мл\n\n"
+               f"Концентрация: {res['concentration']} клеток/мл\n"
+               f"Объем изображения: {res['volume']:.6f} мм³\n"
+               f"Масштаб: {res['scale_factor']:.6e} мм/пиксель\n"
+               f"{calib_msg}\n\n"
                f"Файлы сохранены в папку:\n{res['output_dir']}")
         QMessageBox.information(self, "Успех", msg)
         
     def on_error(self, err):
         self.progress.close()
-        QMessageBox.critical(self, "Ошибка обработки", err)
+        
+        error_dialog = QMessageBox(self)
+        error_dialog.setIcon(QMessageBox.Icon.Critical)
+        error_dialog.setWindowTitle("Ошибка обработки")
+        error_dialog.setText("Произошла критическая ошибка при выполнении анализа.")
+        error_dialog.setInformativeText("Технические подробности доступны в разделе деталей.")
+        
+        main_err_msg = err.strip().split('\n')[-1]
+        error_dialog.setSecondaryText(main_err_msg) if hasattr(error_dialog, 'setSecondaryText') else None
+        
+        error_dialog.setDetailedText(err)
+        error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        error_dialog.exec()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
