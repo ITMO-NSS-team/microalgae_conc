@@ -123,6 +123,6 @@ def calc_volume(
 
         plt.tight_layout()
         plt.savefig(f"{plot_stats_path}")
-        plt.show()
+        plt.close()
 
     return v_img
