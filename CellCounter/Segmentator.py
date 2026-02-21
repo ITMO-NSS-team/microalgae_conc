@@ -1,7 +1,9 @@
 from copy import deepcopy
 import numpy as np
 import cv2
-from matplotlib import pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Must be before importing pyplot
+import matplotlib.pyplot as plt
 
 
 def shift_spectrum(image, channel_num: int):

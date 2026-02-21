@@ -1,11 +1,7 @@
 import sys
 import os
 import math
-import matplotlib
-matplotlib.use('Agg')  
-import matplotlib.pyplot as plt
-plt.show = lambda: None 
-
+import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -14,25 +10,13 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QProgressDialog, QFileDialog, QComboBox)
 from PySide6.QtCore import Qt, QThread, Signal
 import cv2
-import numpy as np
 import traceback
 
-# ИМПОРТЫ ИЗ РЕПОЗИТОРИЯ
-try:
-    from CellCounter.Segmentator import detect_cells, visualize_circles
-    from CellCounter.ConcentrationCalculator import calculate_concentration
-    from CellCounter.VolumeCalculator import calc_volume
-except ImportError:
-    print("ВНИМАНИЕ: Модули CellCounter не найдены. Функционал будет ограничен.")
-    def detect_cells(*args, **kwargs): return np.zeros((1, 9, 3)) 
-    def visualize_circles(*args, **kwargs): pass
-    def calculate_concentration(*args, **kwargs): return 150193
-    def calc_volume(*args, **kwargs): 
-        if kwargs.get('plot_stats_path'):
-            try:
-                with open(kwargs['plot_stats_path'], 'w') as f: f.write("fake plot")
-            except: pass
-        return 0.011985
+
+from CellCounter.Segmentator import detect_cells, visualize_circles
+from CellCounter.ConcentrationCalculator import calculate_concentration
+from CellCounter.VolumeCalculator import calc_volume
+
 
 # КОНСТАНТЫ СТИЛЯ
 COLOR_BG_MAIN = "#734d4d"
@@ -44,10 +28,11 @@ COLOR_BTN_RUN = "#4a3232"
 COLOR_BTN_HOVER = "#5e4040"
 
 DEFAULT_VALUES = {
-    "коэф. сглаживания": "25",
-    "мин. радиус (пикс.)": "15",
-    "макс. радиус (пикс.)": "100",
-    "верхний порог": "30",
+    "коэф. сглаживания": "3",
+    "мин. расстояние (пикс.)": "10",
+    "мин. радиус (пикс.)": "3",
+    "макс. радиус (пикс.)": "20",
+    "верхний порог": "20",
     "нижний порог": "30",
     "контрастность": "нет",
     "обозначение": "нет",
@@ -170,6 +155,46 @@ STYLE = f"""
     }}
 """
 
+DIALOG_STYLE = f"""
+    QDialog {{
+        background-color: {COLOR_BG_MAIN};
+    }}
+    QDialog QLabel {{
+        color: {COLOR_TEXT};
+        font-size: 14px;
+    }}
+    QDialog QPushButton {{
+        background-color: {COLOR_CARD_BG};
+        color: {COLOR_TEXT};
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: 600;
+        min-width: 100px;
+    }}
+    QDialog QPushButton:hover {{
+        background-color: {COLOR_ACCENT};
+    }}
+    QMessageBox {{
+        background-color: {COLOR_BG_MAIN};
+    }}
+    QMessageBox QLabel {{
+        color: {COLOR_TEXT};
+        font-size: 14px;
+        min-width: 300px;
+    }}
+    QMessageBox QPushButton {{
+        background-color: {COLOR_CARD_BG};
+        color: {COLOR_TEXT};
+        border-radius: 6px;
+        padding: 6px 16px;
+        font-weight: 600;
+        min-width: 80px;
+    }}
+    QMessageBox QPushButton:hover {{
+        background-color: {COLOR_ACCENT};
+    }}
+"""
+
 class ProcessingThread(QThread):
     finished = Signal(dict)
     error = Signal(str)
@@ -192,19 +217,19 @@ class ProcessingThread(QThread):
                 raise ValueError(f"Не удалось загрузить изображение: {self.image_path}")
             
             self.progress.emit("Обнаружение клеток...")
-            
+
             increase_channel = None
-            if self.params.get('контрастность', 'нет').lower() in ['да', 'авто', 'yes']:
-                increase_channel = 0
-            
+            if self.params.get('контрастность', 'нет').lower() == 'да':
+                increase_channel = 1
+
             circles = detect_cells(
                 image,
                 increase_channel=increase_channel,
-                minDist=int(self.params.get('коэф. сглаживания', 25)),
-                minRadius=int(self.params.get('мин. радиус (пикс.)', 15)),
-                maxRadius=int(self.params.get('макс. радиус (пикс.)', 100)),
-                param2=int(self.params.get('верхний порог', 30)),
-                blur_kernel=int(self.params.get('коэф. сглаживания', 25))
+                minDist=int(self.params.get('мин. расстояние (пикс.)', 10)),
+                minRadius=int(self.params.get('мин. радиус (пикс.)', 3)),
+                maxRadius=int(self.params.get('макс. радиус (пикс.)', 20)),
+                param2=int(self.params.get('верхний порог', 20)),
+                blur_kernel=int(self.params.get('коэф. сглаживания', 3))
             )
             
             if circles.shape[1] == 0:
@@ -287,7 +312,7 @@ class ProcessingThread(QThread):
             f.write(f"Концентрация: {concentration} клеток/мл\n")
 
 class MainScreen(QWidget):
-    def __init__(self, nav, run_logic, browse_folder, browse_photo):
+    def __init__(self, nav, run_logic, browse_calibration, browse_samples):
         super().__init__()
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(50, 40, 50, 40)
@@ -317,37 +342,55 @@ class MainScreen(QWidget):
         form_container = QWidget()
         form_layout = QVBoxLayout(form_container)
         form_layout.setSpacing(15)
-        
-        lbl_folder = QLabel("Папка с калибровочными изображениями (мин. 5 фото):")
-        form_layout.addWidget(lbl_folder)
-        
-        row_folder = QHBoxLayout()
-        self.path_folder = QLineEdit()
-        self.path_folder.setObjectName("BigInput")
-        self.path_folder.setPlaceholderText("Выберите папку...")
-        btn_browse_f = QPushButton("📂")
-        btn_browse_f.setObjectName("BrowseBtn")
-        btn_browse_f.setFixedSize(50, 45)
-        btn_browse_f.clicked.connect(browse_folder)
-        row_folder.addWidget(self.path_folder)
-        row_folder.addWidget(btn_browse_f)
-        form_layout.addLayout(row_folder)
-        
-        lbl_photo = QLabel("Фотография микроводорослей для анализа:")
-        form_layout.addWidget(lbl_photo)
-        
-        row_photo = QHBoxLayout()
-        self.path_photo = QLineEdit()
-        self.path_photo.setObjectName("BigInput")
-        self.path_photo.setPlaceholderText("Выберите изображение...")
-        btn_browse_p = QPushButton("🖼️")
-        btn_browse_p.setObjectName("BrowseBtn")
-        btn_browse_p.setFixedSize(50, 45)
-        btn_browse_p.clicked.connect(browse_photo)
-        row_photo.addWidget(self.path_photo)
-        row_photo.addWidget(btn_browse_p)
-        form_layout.addLayout(row_photo)
-        
+
+        # ===== INPUT 1: CALIBRATION FOLDER (with multiple grid images) =====
+        lbl_calib = QLabel("📊 Папка с калибровочными изображениями сетки (минимум 5 фото):")
+        lbl_calib.setStyleSheet("font-weight: bold; color: #ffaaaa;")
+        form_layout.addWidget(lbl_calib)
+
+        row_calib = QHBoxLayout()
+        self.path_calib = QLineEdit()
+        self.path_calib.setObjectName("BigInput")
+        self.path_calib.setPlaceholderText("Выберите папку с фото сетки Горяева...")
+        btn_browse_c = QPushButton("📂")
+        btn_browse_c.setObjectName("BrowseBtn")
+        btn_browse_c.setFixedSize(50, 45)
+        btn_browse_c.clicked.connect(lambda: browse_calibration(self.path_calib))
+        row_calib.addWidget(self.path_calib)
+        row_calib.addWidget(btn_browse_c)
+        form_layout.addLayout(row_calib)
+
+        # Optional: show calibration preview button
+        btn_preview = QPushButton("Предпросмотр калибровки")
+        btn_preview.setStyleSheet("font-size: 14px; background-color: #5a3e3e;")
+        btn_preview.clicked.connect(self.preview_calibration)
+        form_layout.addWidget(btn_preview, alignment=Qt.AlignmentFlag.AlignRight)
+
+        form_layout.addSpacing(20)
+
+        # ===== INPUT 2: SAMPLES FOLDER (with cell images to analyze) =====
+        lbl_samples = QLabel("🔬 Папка с фотографиями микроводорослей для анализа:")
+        lbl_samples.setStyleSheet("font-weight: bold;")
+        form_layout.addWidget(lbl_samples)
+
+        row_samples = QHBoxLayout()
+        self.path_samples = QLineEdit()
+        self.path_samples.setObjectName("BigInput")
+        self.path_samples.setPlaceholderText("Выберите папку с фото клеток...")
+        btn_browse_s = QPushButton("📂")
+        btn_browse_s.setObjectName("BrowseBtn")
+        btn_browse_s.setFixedSize(50, 45)
+        btn_browse_s.clicked.connect(lambda: browse_samples(self.path_samples))
+        row_samples.addWidget(self.path_samples)
+        row_samples.addWidget(btn_browse_s)
+        form_layout.addLayout(row_samples)
+
+        # Info about output folder (will be created inside samples folder)
+        info_label = QLabel("✓ Результаты будут сохранены в папку 'segmented' внутри папки с образцами")
+        info_label.setStyleSheet("color: #aaffaa; font-size: 14px; padding: 5px;")
+        info_label.setWordWrap(True)
+        form_layout.addWidget(info_label)
+
         main_layout.addWidget(form_container)
         main_layout.addSpacing(20)
 
@@ -364,16 +407,128 @@ class MainScreen(QWidget):
         footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(footer)
 
-# [ИЗМЕНЕНИЕ] Подсказки теперь только на русском
+    def preview_calibration(self):
+        """Show calibration statistics and plot"""
+        calib_folder = self.path_calib.text().strip()
+        if not calib_folder or not os.path.exists(calib_folder):
+            QMessageBox.warning(self, "Внимание", "Сначала выберите папку с калибровкой")
+            return
+
+        # Get images
+        images = [f for f in os.listdir(calib_folder)
+                  if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))]
+
+        if len(images) < 5:
+            QMessageBox.warning(self, "Недостаточно изображений",
+                                f"Найдено {len(images)} изображений.\nНужно минимум 5 для надежной калибровки.")
+            return
+
+        try:
+            # Get main window reference
+            main_window = self.window()
+
+            # Get parameters from settings
+            grid_size = float(main_window.sett_scr.inputs['размер сетки (мм)'].text())
+            depth = float(main_window.sett_scr.inputs['глубина камеры (мм)'].text())
+
+            # Get first sample image to get dimensions (if samples folder is selected)
+            samples_folder = self.path_samples.text().strip()
+            if samples_folder and os.path.exists(samples_folder):
+                sample_images = [f for f in os.listdir(samples_folder)
+                                 if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))
+                                 and f != "segmented"]
+                if sample_images:
+                    first_img = cv2.imread(os.path.join(samples_folder, sample_images[0]))
+                    if first_img is not None:
+                        P_h, P_w = first_img.shape[:2]
+                    else:
+                        # Default dimensions if can't load
+                        P_h, P_w = 1000, 1000
+                else:
+                    P_h, P_w = 1000, 1000
+            else:
+                P_h, P_w = 1000, 1000
+
+            # Create temporary file for plot
+            temp_plot = os.path.join(os.path.dirname(calib_folder), "temp_calib_preview.png")
+
+            # Calculate volume (this will generate the plot)
+            v_img = calc_volume(
+                imgs_path=calib_folder,
+                l=grid_size,
+                h=depth,
+                P_h=P_h,
+                P_w=P_w,
+                plot_stats_path=temp_plot
+            )
+
+            # Calculate scale factor
+            s_squared = v_img / (P_h * P_w * depth)
+            mm_per_pixel = math.sqrt(s_squared)
+
+            # Show the plot in a new window
+            if os.path.exists(temp_plot):
+                from PySide6.QtGui import QPixmap
+                from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel
+
+                dialog = QDialog(self)
+                dialog.setWindowTitle("Предпросмотр калибровки")
+                dialog.resize(900, 600)
+                # Стили наследуются от глобальных, не нужно устанавливать заново
+
+                layout = QVBoxLayout(dialog)
+
+                # Create label with image
+                label = QLabel()
+                pixmap = QPixmap(temp_plot)
+                scaled_pixmap = pixmap.scaled(880, 500, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                label.setPixmap(scaled_pixmap)
+                label.setAlignment(Qt.AlignCenter)
+                layout.addWidget(label)
+
+                # Add info label
+                info = QLabel(
+                    f"Калибровочных изображений: {len(images)}\n"
+                    f"Объем изображения: {v_img:.6f} мм³\n"
+                    f"Масштаб: {mm_per_pixel:.6e} мм/пиксель\n\n"
+                    f"Для более точной калибровки используйте минимум 5 изображений\n"
+                    f"в разных участках камеры."
+                )
+                info.setAlignment(Qt.AlignCenter)
+                layout.addWidget(info)
+
+                # Add close button
+                btn_close = QPushButton("Закрыть")
+                btn_close.clicked.connect(dialog.accept)
+                btn_close.setFixedWidth(200)
+                layout.addWidget(btn_close, alignment=Qt.AlignCenter)
+
+                dialog.exec()
+
+                # Clean up temp file
+                try:
+                    os.remove(temp_plot)
+                except:
+                    pass
+            else:
+                QMessageBox.information(self, "Калибровка",
+                                        f"Калибровочных изображений: {len(images)}\n"
+                                        f"Объем изображения: {v_img:.6f} мм³\n"
+                                        f"Масштаб: {mm_per_pixel:.6e} мм/пиксель")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось выполнить калибровку:\n{str(e)}")
+
 PARAM_DESCRIPTIONS = {
-    "коэф. сглаживания": "Размер ядра для медианного размытия (должен быть нечетным целым числом).",
+    "коэф. сглаживания": "Размер ядра для медианного размытия (3, 5, 7...). Меньшие значения сохраняют больше деталей.",
+    "мин. расстояние (пикс.)": "Минимальное расстояние между центрами обнаруженных кругов.",
     "мин. радиус (пикс.)": "Минимальный радиус клетки для обнаружения в пикселях.",
     "макс. радиус (пикс.)": "Максимальный радиус клетки для обнаружения в пикселях.",
-    "верхний порог": "Порог аккумулятора (более низкие значения приводят к обнаружению большего числа ложных кругов).",
-    "нижний порог": "Порог детектора границ Canny.",
-    "контрастность": "Функция увеличения контраста в одном канале изображения с использованием CLAHE.",
+    "верхний порог": "Чувствительность детектора (меньше = больше ложных срабатываний).",
+    "нижний порог": "Порог детектора границ Canny (обычно оставляют 30).",
+    "контрастность": "Улучшение контраста в синем канале (использовать только для тусклых изображений).",
     "обозначение": "Нумеровать ли обнаруженные круги.",
-    "средний радиус": "Показывать ли расширенный заголовок со статистикой площади."
+    "средний радиус": "Показывать ли расширенный заголовок со статистикой."
 }
 
 class SettingsScreen(QWidget):
@@ -571,15 +726,20 @@ class DefaultScreen(QWidget):
 class App(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Microalgae Concentration Calculator")
+        self.setWindowTitle("Microalgae Counter")
         self.resize(1100, 800)
         self.setMinimumSize(950, 750)
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(STYLE + DIALOG_STYLE)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.main_scr = MainScreen(self.goto, self.run_process, self.browse_folder, self.browse_photo)
+        self.main_scr = MainScreen(
+            self.goto,
+            self.run_process,
+            self.browse_calibration_folder,  # For calibration folder
+            self.browse_samples_folder          # For samples folder (reusing same method)
+        )
         self.sett_scr = SettingsScreen(self.goto)
         self.def_scr = DefaultScreen(self.goto)
 
@@ -592,102 +752,375 @@ class App(QMainWindow):
     def goto(self, index):
         self.stack.setCurrentIndex(index)
 
-    def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Выбрать папку для калибровки")
+    def browse_calibration_folder(self, line_edit):
+        """Browse for calibration folder (with grid images)"""
+        folder = QFileDialog.getExistingDirectory(self, "Выбрать папку с калибровочными изображениями")
         if folder:
-            self.main_scr.path_folder.setText(folder)
-    
-    def browse_photo(self):
-        photo, _ = QFileDialog.getOpenFileName(self, "Выбрать фото", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif)")
-        if photo:
-            self.main_scr.path_photo.setText(photo)
+            line_edit.setText(folder)
+            # Validate it has images
+            images = [f for f in os.listdir(folder)
+                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))]
+            if len(images) < 5:
+                QMessageBox.warning(self, "Предупреждение",
+                                    f"В папке только {len(images)} изображений.\n"
+                                    "Для точной калибровки нужно минимум 5 фото сетки.")
+
+    def browse_samples_folder(self, line_edit):
+        """Browse for folder with cell images to analyze"""
+        folder = QFileDialog.getExistingDirectory(self, "Выбрать папку с фото клеток для анализа")
+        if folder:
+            line_edit.setText(folder)
+
 
     def run_process(self):
-        folder = self.main_scr.path_folder.text().strip()
-        photo = self.main_scr.path_photo.text().strip()
+        calib_folder = self.main_scr.path_calib.text().strip()
+        samples_folder = self.main_scr.path_samples.text().strip()
 
-        if not folder or not photo:
-            QMessageBox.warning(self, "Внимание", "Пожалуйста, выберите папку и фотографию.")
-            return
-        
-        if not os.path.exists(folder) or not os.path.exists(photo):
-            QMessageBox.critical(self, "Ошибка", "Указанные пути не существуют.")
+        if not calib_folder or not samples_folder:
+            QMessageBox.warning(self, "Внимание",
+                                "Пожалуйста, выберите папку с калибровкой и папку с образцами.")
             return
 
-        final_params = {}
-        missing = []
-        
+        if not os.path.exists(calib_folder) or not os.path.exists(samples_folder):
+            QMessageBox.critical(self, "Ошибка", "Указанные папки не существуют.")
+            return
+
+        # Count calibration images
+        calib_images = [f for f in os.listdir(calib_folder)
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))]
+        if len(calib_images) < 5:
+            reply = QMessageBox.question(self, "Мало калибровочных изображений",
+                                         f"Найдено только {len(calib_images)} калибровочных изображений.\n"
+                                         "Результат может быть неточным. Продолжить?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Count sample images
+        sample_images = [f for f in os.listdir(samples_folder)
+                         if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))
+                         and f != "segmented"]  # Exclude output folder
+        if not sample_images:
+            QMessageBox.warning(self, "Нет изображений",
+                                "В папке с образцами нет изображений для анализа.")
+            return
+
+        # Show summary
+        msg = (f"Найдено:\n"
+               f"• Калибровочных изображений: {len(calib_images)}\n"
+               f"• Образцов для анализа: {len(sample_images)}\n\n"
+               f"Результаты будут сохранены в:\n{samples_folder}/segmented/")
+
+        reply = QMessageBox.question(self, "Запуск анализа", msg + "\n\nНачать обработку?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+        # Get grid size and depth from settings
+        grid_size = float(self.sett_scr.inputs['размер сетки (мм)'].text())
+        depth = float(self.sett_scr.inputs['глубина камеры (мм)'].text())
+
+        # Process all images in the samples folder (like inference_example.py)
+        self.process_samples_folder(samples_folder, calib_folder, grid_size, depth)
+
+    def process_samples_folder(self, samples_folder, calib_folder, grid_size, depth):
+        """Process all images in the samples folder (like inference_example.py)"""
+
+        print("=" * 50)
+        print("НАЧАЛО ОБРАБОТКИ")
+        print(f"Папка образцов: {samples_folder}")
+        print(f"Папка калибровки: {calib_folder}")
+        print(f"Размер сетки: {grid_size}")
+        print(f"Глубина: {depth}")
+        print("=" * 50)
+
+        # Get parameters from settings
+        params = {}
+        print("\nПАРАМЕТРЫ ИЗ НАСТРОЕК:")
         for name, widget in self.sett_scr.inputs.items():
             if isinstance(widget, QComboBox):
-                val = widget.currentText()
+                params[name] = widget.currentText()
+                print(f"  {name}: {params[name]} (QComboBox)")
             else:
-                val = widget.text().strip()
-            
-            if name in MANDATORY_FIELDS:
-                if not val:
-                    missing.append(name)
-                else:
-                    try:
-                        float(val)
-                        final_params[name] = val
-                    except:
-                        QMessageBox.warning(self, "Ошибка", f"Некорректное число: {name}")
-                        return
-            else:
-                if isinstance(widget, QLineEdit) and not val:
-                    final_params[name] = DEFAULT_VALUES[name]
-                else:
-                    final_params[name] = val
+                params[name] = widget.text().strip()
+                print(f"  {name}: '{params[name]}' (QLineEdit)")
 
-        if missing:
-            QMessageBox.warning(self, "Заполните обязательные поля", 
-                              "Зайдите в настройки и укажите:\n" + "\n".join(missing))
-            self.goto(1)
+                # Проверяем числовые параметры на пустые значения
+                if name in ['коэф. сглаживания', 'мин. расстояние (пикс.)', 'мин. радиус (пикс.)',
+                            'макс. радиус (пикс.)', 'верхний порог', 'нижний порог']:
+                    if not params[name]:
+                        print(f"  ⚠️ ВНИМАНИЕ: {name} пустой! Использую значение по умолчанию")
+                        params[name] = DEFAULT_VALUES.get(name, '')
+                    try:
+                        int(params[name])
+                        print(f"  ✅ {name} = {params[name]} (корректное целое число)")
+                    except ValueError:
+                        print(f"  ❌ ОШИБКА: {name} = '{params[name]}' не является целым числом!")
+
+        # Create output folder
+        output_folder = os.path.join(samples_folder, "segmented")
+        os.makedirs(output_folder, exist_ok=True)
+        print(f"\nПапка для результатов: {output_folder}")
+
+        # Prepare results dataframe
+        results = []
+
+        # Get list of images
+        image_files = [f for f in os.listdir(samples_folder)
+                       if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))
+                       and f != "segmented"]
+
+        print(f"\nНайдено изображений для обработки: {len(image_files)}")
+        for img in image_files:
+            print(f"  - {img}")
+
+        if not image_files:
+            QMessageBox.warning(self, "Нет изображений", "В папке нет изображений для обработки")
             return
 
-        self.progress = QProgressDialog("Инициализация...", "Отмена", 0, 0, self)
+        # Setup progress
+        total_images = len(image_files)
+        self.progress = QProgressDialog(f"Обработка 0/{total_images} изображений...",
+                                        "Отмена", 0, total_images, self)
         self.progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.progress.setMinimumDuration(0)
         self.progress.show()
-        
-        self.processing_thread = ProcessingThread(photo, folder, final_params)
-        self.processing_thread.progress.connect(self.progress.setLabelText)
-        self.processing_thread.finished.connect(self.on_finished)
-        self.processing_thread.error.connect(self.on_error)
-        self.processing_thread.start()
 
-    def on_finished(self, res):
+        # First, calculate volume using calibration folder
+        self.progress.setLabelText("Калибровка объема...")
+        print("\n" + "=" * 50)
+        print("КАЛИБРОВКА ОБЪЕМА")
+        print("=" * 50)
+
+        # Get first image to get dimensions
+        first_img_path = os.path.join(samples_folder, image_files[0])
+        print(f"Загружаю первое изображение для определения размеров: {first_img_path}")
+        first_img = cv2.imread(first_img_path)
+
+        if first_img is None:
+            error_msg = f"Не удалось загрузить {first_img_path}"
+            print(f"❌ {error_msg}")
+            QMessageBox.critical(self, "Ошибка", error_msg)
+            return
+
+        P_h, P_w = first_img.shape[:2]
+        print(f"Размеры изображения: {P_h} x {P_w} пикселей")
+
+        # Calculate volume using calibration images
+        calib_plot_path = os.path.join(output_folder, "calibration_stats.png")
+        print(f"Вычисление объема по калибровочным изображениям из: {calib_folder}")
+        print(f"График калибровки будет сохранен в: {calib_plot_path}")
+
+        try:
+            v_img = calc_volume(
+                imgs_path=calib_folder,
+                l=grid_size,
+                h=depth,
+                P_h=P_h,
+                P_w=P_w,
+                plot_stats_path=calib_plot_path
+            )
+            print(f"✅ Объем изображения: {v_img:.6f} мм³")
+        except Exception as e:
+            print(f"❌ Ошибка при калибровке: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Ошибка калибровки", f"Не удалось вычислить объем:\n{str(e)}")
+            return
+
+        # Calculate scale factor
+        s_squared = v_img / (P_h * P_w * depth)
+        mm_per_pixel = math.sqrt(s_squared)
+        print(f"Масштаб: {mm_per_pixel:.6e} мм/пиксель")
+
+        # Process each image
+        print("\n" + "=" * 50)
+        print("ОБРАБОТКА ИЗОБРАЖЕНИЙ")
+        print("=" * 50)
+
+        for idx, image_file in enumerate(image_files):
+            if self.progress.wasCanceled():
+                print("Обработка отменена пользователем")
+                break
+
+            self.progress.setLabelText(f"Обработка {idx + 1}/{total_images}: {image_file}")
+            self.progress.setValue(idx)
+            QApplication.processEvents()
+
+            print(f"\n--- Обработка {idx + 1}/{total_images}: {image_file} ---")
+
+            try:
+                # Load image
+                img_path = os.path.join(samples_folder, image_file)
+                print(f"Загрузка: {img_path}")
+                img = cv2.imread(img_path)
+
+                if img is None:
+                    print(f"❌ Не удалось загрузить {image_file}")
+                    continue
+
+                print(f"✅ Изображение загружено, размер: {img.shape}")
+
+                # Configure detection parameters
+                increase_channel = None
+                contrast = params.get('контрастность', 'нет').lower()
+                print(f"Контрастность: {contrast}")
+
+                if contrast == 'да':
+                    increase_channel = 1
+                    print("  Будет применено улучшение контраста (канал 1 - зеленый)")
+
+                # Проверяем все числовые параметры перед использованием
+                try:
+                    minDist = int(params.get('мин. расстояние (пикс.)', 10))
+                    print(f"мин. расстояние: {minDist}")
+                except ValueError:
+                    print(f"⚠️ Ошибка в параметре 'мин. расстояние', использую значение по умолчанию 10")
+                    minDist = 10
+
+                try:
+                    minRadius = int(params.get('мин. радиус (пикс.)', 3))
+                    print(f"мин. радиус: {minRadius}")
+                except ValueError:
+                    print(f"⚠️ Ошибка в параметре 'мин. радиус', использую значение по умолчанию 3")
+                    minRadius = 3
+
+                try:
+                    maxRadius = int(params.get('макс. радиус (пикс.)', 20))
+                    print(f"макс. радиус: {maxRadius}")
+                except ValueError:
+                    print(f"⚠️ Ошибка в параметре 'макс. радиус', использую значение по умолчанию 20")
+                    maxRadius = 20
+
+                try:
+                    param2 = int(params.get('верхний порог', 20))
+                    print(f"верхний порог: {param2}")
+                except ValueError:
+                    print(f"⚠️ Ошибка в параметре 'верхний порог', использую значение по умолчанию 20")
+                    param2 = 20
+
+                try:
+                    blur_kernel = int(params.get('коэф. сглаживания', 3))
+                    print(f"коэф. сглаживания: {blur_kernel}")
+                except ValueError:
+                    print(f"⚠️ Ошибка в параметре 'коэф. сглаживания', использую значение по умолчанию 3")
+                    blur_kernel = 3
+
+                # Detect cells
+                print("Запуск detect_cells...")
+                circles = detect_cells(
+                    img,
+                    increase_channel=increase_channel,
+                    minDist=minDist,
+                    minRadius=minRadius,
+                    maxRadius=maxRadius,
+                    param2=param2,
+                    blur_kernel=blur_kernel
+                )
+
+                print(f"Результат detect_cells: circles.shape = {circles.shape}")
+
+                # Count cells
+                if circles.shape[1] == 0:
+                    cell_count = 0
+                    print(f"⚠️ Клетки не обнаружены в {image_file}")
+                else:
+                    cell_count = circles.shape[1]
+                    print(f"✅ Обнаружено клеток: {cell_count}")
+
+                    # Save visualization
+                    output_img_path = os.path.join(output_folder, f"seg_{image_file}")
+                    show_radius = params.get('средний радиус', 'нет').lower() == 'да'
+                    show_annotation = params.get('обозначение', 'нет').lower() == 'да'
+
+                    print(f"Сохранение визуализации в: {output_img_path}")
+                    print(f"  показывать радиус: {show_radius}, аннотации: {show_annotation}")
+
+                    visualize_circles(img, circles, save_path=output_img_path,
+                                      annotate=show_annotation, ext_title=show_radius)
+                    print(f"✅ Визуализация сохранена")
+
+                # Calculate concentration
+                try:
+                    dilution = float(params.get('коэф. разбавления', 1))
+                    print(f"коэф. разбавления: {dilution}")
+                except ValueError:
+                    print(f"⚠️ Ошибка в параметре 'коэф. разбавления', использую значение по умолчанию 1")
+                    dilution = 1.0
+
+                concentration = calculate_concentration(cell_count, dilution, v_img)
+                print(f"Концентрация: {concentration} клеток/мл")
+
+                # Store results
+                results.append({
+                    'image': image_file,
+                    'cells_num': cell_count,
+                    'concentration': concentration,
+                    'volume_mm3': v_img,
+                    'scale_mm_per_px': mm_per_pixel
+                })
+                print(f"✅ Результаты сохранены")
+
+            except Exception as e:
+                print(f"❌ ОШИБКА при обработке {image_file}:")
+                import traceback
+                traceback.print_exc()
+                continue
+
         self.progress.close()
-        
-        calib_msg = ""
-        if os.path.exists(res['calib_plot']):
-            calib_msg = f"\n📊 График калибровки создан:\n{os.path.basename(res['calib_plot'])}"
-        
-        # ДОБАВЛЕН ВЫВОД КОЭФФИЦИЕНТА
-        msg = (f"Анализ успешно завершен!\n\n"
-               f"Обнаружено клеток: {res['cell_count']}\n"
-               f"Концентрация: {res['concentration']} клеток/мл\n"
-               f"Объем изображения: {res['volume']:.6f} мм³\n"
-               f"Масштаб: {res['scale_factor']:.6e} мм/пиксель\n"
-               f"{calib_msg}\n\n"
-               f"Файлы сохранены в папку:\n{res['output_dir']}")
-        QMessageBox.information(self, "Успех", msg)
-        
-    def on_error(self, err):
-        self.progress.close()
-        
-        error_dialog = QMessageBox(self)
-        error_dialog.setIcon(QMessageBox.Icon.Critical)
-        error_dialog.setWindowTitle("Ошибка обработки")
-        error_dialog.setText("Произошла критическая ошибка при выполнении анализа.")
-        error_dialog.setInformativeText("Технические подробности доступны в разделе деталей.")
-        
-        main_err_msg = err.strip().split('\n')[-1]
-        error_dialog.setSecondaryText(main_err_msg) if hasattr(error_dialog, 'setSecondaryText') else None
-        
-        error_dialog.setDetailedText(err)
-        error_dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
-        error_dialog.exec()
+
+        # Save results to CSV (like in inference_example.py)
+        if results:
+            df = pd.DataFrame(results)
+            csv_path = os.path.join(output_folder, "cells.csv")
+            df.to_csv(csv_path, index=False)
+
+            # Also save a summary text file
+            summary_path = os.path.join(output_folder, "summary.txt")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(f"РЕЗУЛЬТАТЫ АНАЛИЗА\n")
+                f.write(f"=" * 50 + "\n\n")
+                f.write(f"Дата: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Папка с образцами: {samples_folder}\n")
+                f.write(f"Папка калибровки: {calib_folder}\n")
+                f.write(f"Размер сетки: {grid_size} мм\n")
+                f.write(f"Глубина камеры: {depth} мм\n")
+                f.write(f"Объем изображения: {v_img:.6f} мм³\n")
+                f.write(f"Масштаб: {mm_per_pixel:.6e} мм/пиксель\n\n")
+                f.write(f"Обработано изображений: {len(results)}\n\n")
+                f.write(f"Параметры обнаружения:\n")
+                for key, value in params.items():
+                    f.write(f"  {key}: {value}\n")
+                f.write("\n" + "=" * 50 + "\n\n")
+
+                total_cells = sum(r['cells_num'] for r in results)
+                avg_concentration = sum(r['concentration'] for r in results) / len(results)
+
+                f.write(f"ВСЕГО КЛЕТОК: {total_cells}\n")
+                f.write(f"СРЕДНЯЯ КОНЦЕНТРАЦИЯ: {avg_concentration:.0f} клеток/мл\n\n")
+
+                f.write("ДЕТАЛЬНЫЕ РЕЗУЛЬТАТЫ:\n")
+                for r in results:
+                    f.write(f"{r['image']}: {r['cells_num']} клеток, {r['concentration']} клеток/мл\n")
+
+            # Show completion message
+            msg = (f"✅ Обработка завершена!\n\n"
+                   f"Обработано изображений: {len(results)}\n"
+                   f"Всего клеток: {total_cells}\n"
+                   f"Средняя концентрация: {avg_concentration:.0f} клеток/мл\n\n"
+                   f"Результаты сохранены в:\n{output_folder}")
+
+            QMessageBox.information(self, "Успех", msg)
+
+            # Optionally open the output folder
+            reply = QMessageBox.question(self, "Открыть папку",
+                                         "Открыть папку с результатами?",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                os.startfile(output_folder)  # Windows
+                # For cross-platform: import subprocess; subprocess.Popen(f'explorer "{output_folder}"')
+        else:
+            QMessageBox.warning(self, "Нет результатов", "Не удалось обработать ни одного изображения.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
